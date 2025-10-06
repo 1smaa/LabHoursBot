@@ -1,17 +1,27 @@
-# file: lab_hours_bot.py
+# lab_hours_bot_flask.py
 import re
-from datetime import datetime
 import pandas as pd
+from datetime import datetime
+from flask import Flask, request
 from botbuilder.core import BotFrameworkAdapter, BotFrameworkAdapterSettings, TurnContext
 from botbuilder.schema import Activity, ActivityTypes
-from aiohttp import web
 
-APP_ID = ""  # leave blank for local testing
-APP_PASSWORD = ""  # leave blank for local testing
+# -----------------------
+# CONFIGURATION
+# -----------------------
+APP_ID = "YOUR_AZURE_APP_ID"         # Replace with your Azure App ID
+APP_PASSWORD = "YOUR_AZURE_APP_PASSWORD"  # Replace with your Azure App Password
 LOG_FILE = "hours_log.csv"
 
+# -----------------------
+# FLASK SETUP
+# -----------------------
+app = Flask(__name__)
 adapter = BotFrameworkAdapter(BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD))
 
+# -----------------------
+# HELPER FUNCTIONS
+# -----------------------
 def parse_entry(text):
     """
     Parse messages like "14:30-16:30 doing tasks".
@@ -20,11 +30,11 @@ def parse_entry(text):
     match = re.match(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*(.*)", text)
     if not match:
         return None
-    start, end, description = match.groups()
-    start_t = datetime.strptime(start, "%H:%M")
-    end_t = datetime.strptime(end, "%H:%M")
+    start_str, end_str, description = match.groups()
+    start_t = datetime.strptime(start_str, "%H:%M")
+    end_t = datetime.strptime(end_str, "%H:%M")
     duration = (end_t - start_t).seconds / 3600
-    return start, end, duration, description.strip()
+    return start_str, end_str, duration, description.strip()
 
 def log_entry(start, end, duration, description):
     today = datetime.now()
@@ -64,12 +74,15 @@ def get_summary(month=None, year=None):
     lines.append(f"\nTotal hours: {total:.2f}")
     return "\n".join(lines)
 
+# -----------------------
+# BOT HANDLER
+# -----------------------
 async def on_message(turn_context: TurnContext):
-    text = turn_context.activity.text.strip().lower()
-
-    # Check for show command
-    if text.startswith("show"):
-        m = re.match(r"show\s*(\d{1,2})-(\d{4})", text)
+    text = turn_context.activity.text.strip()
+    
+    # Handle "show" command
+    if text.lower().startswith("show"):
+        m = re.match(r"show\s*(\d{1,2})-(\d{4})", text.lower())
         if m:
             month, year = map(int, m.groups())
             summary = get_summary(month, year)
@@ -78,24 +91,30 @@ async def on_message(turn_context: TurnContext):
         await turn_context.send_activity(summary)
         return
 
-    # Try to parse entry
+    # Handle hour entry
     entry = parse_entry(text)
     if entry:
         start, end, duration, desc = entry
         log_entry(start, end, duration, desc)
         await turn_context.send_activity(f"Logged {duration:.2f}h ({start}-{end}): {desc}")
     else:
-        await turn_context.send_activity("Please write in the format 'HH:MM-HH:MM description', or 'show' to list entries.")
+        await turn_context.send_activity(
+            "Please write in the format 'HH:MM-HH:MM task' or 'show [MM-YYYY]'"
+        )
 
-async def messages(req):
-    body = await req.json()
+# -----------------------
+# FLASK ROUTE
+# -----------------------
+@app.route("/api/messages", methods=["POST"])
+def messages():
+    body = request.json
     activity = Activity().deserialize(body)
-    auth_header = req.headers.get("Authorization", "")
-    await adapter.process_activity(activity, auth_header, on_message)
-    return web.Response(status=200)
+    auth_header = request.headers.get("Authorization", "")
+    task = adapter.process_activity(activity, auth_header, on_message)
+    return "", 200
 
-app = web.Application()
-app.router.add_post("/api/messages", messages)
-
+# -----------------------
+# ENTRY POINT
+# -----------------------
 if __name__ == "__main__":
-    web.run_app(app, host="localhost", port=3978)
+    app.run(debug=True)
